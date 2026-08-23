@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: kaleo-youth-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-kaleo}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-kaleo_local_pw}
+      POSTGRES_DB: ${DB_DATABASE:-kaleo_youth}
+      TZ: Asia/Seoul
+    ports:
+      - '127.0.0.1:${DB_PORT:-5433}:5432'
+    volumes:
+      - kaleo-youth-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USERNAME:-kaleo} -d ${DB_DATABASE:-kaleo_youth}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  kaleo-youth-pgdata:
