@@ -70,7 +70,6 @@ async function isReusableWebp(file: Express.Multer.File): Promise<boolean> {
   return (
     metadata.format === 'webp' &&
     !metadata.exif &&
-    !metadata.icc &&
     !metadata.iptc &&
     !metadata.xmp
   );

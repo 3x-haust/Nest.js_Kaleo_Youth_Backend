@@ -5,7 +5,7 @@ import sharp from 'sharp';
 import { normalizeStoredUpload } from './stored-upload';
 
 describe('normalizeStoredUpload', () => {
-  it('keeps an already optimized metadata-free WebP byte-for-byte', async () => {
+  it('keeps a browser-optimized WebP with its color profile byte-for-byte', async () => {
     const uploadDir = await mkdtemp(join(tmpdir(), 'kaleo-optimized-webp-'));
     const filePath = join(uploadDir, 'optimized.webp');
     const pixels = Buffer.alloc(320 * 240 * 3);
@@ -15,6 +15,7 @@ describe('normalizeStoredUpload', () => {
     const optimized = await sharp(pixels, {
       raw: { width: 320, height: 240, channels: 3 },
     })
+      .withIccProfile('srgb')
       .webp({ quality: 67 })
       .toBuffer();
     await writeFile(filePath, optimized);
