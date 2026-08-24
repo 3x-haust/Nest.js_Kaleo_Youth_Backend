@@ -10,7 +10,6 @@ import {
 
 const SERMON_SYNC_LOCK_KEY = 'sermon-youtube-sync';
 const RECENT_UPLOAD_LIMIT = 50;
-const DEFAULT_PREACHER_NAME = '박정인 목사';
 const TITLE_MAX_LENGTH = 200;
 const PREACHER_NAME_MAX_LENGTH = 50;
 const BIBLE_REFERENCE_MAX_LENGTH = 120;
@@ -68,16 +67,11 @@ export class SermonYoutubeSyncService {
     }
 
     const orderedUploads = this.uniqueOldestFirst(uploads);
-    if (orderedUploads.length === 0) return { status: 'unchanged' };
-
-    const configuredPreacher = (
-      this.configService.get<string>('youtube.sermonPreacherName') ??
-      DEFAULT_PREACHER_NAME
-    ).trim();
-    const preacherName = (configuredPreacher || DEFAULT_PREACHER_NAME).slice(
-      0,
-      PREACHER_NAME_MAX_LENGTH,
-    );
+    const structuredUploads = orderedUploads.flatMap((upload) => {
+      const metadata = this.parseStructuredTitle(upload.title);
+      return metadata ? [{ upload, metadata }] : [];
+    });
+    if (structuredUploads.length === 0) return { status: 'unchanged' };
 
     return this.dataSource.transaction(async (manager) => {
       await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
@@ -85,7 +79,9 @@ export class SermonYoutubeSyncService {
       ]);
 
       const repository = manager.getRepository(Sermon);
-      const videoIds = orderedUploads.map((upload) => upload.youtubeVideoId);
+      const videoIds = structuredUploads.map(
+        ({ upload }) => upload.youtubeVideoId,
+      );
       const existing = await repository.find({
         where: { youtubeVideoId: In(videoIds) },
       });
@@ -94,22 +90,19 @@ export class SermonYoutubeSyncService {
           .map((sermon) => sermon.youtubeVideoId)
           .filter((videoId): videoId is string => Boolean(videoId)),
       );
-      const unseen = orderedUploads.filter(
-        (upload) => !existingIds.has(upload.youtubeVideoId),
+      const unseen = structuredUploads.filter(
+        ({ upload }) => !existingIds.has(upload.youtubeVideoId),
       );
       if (unseen.length === 0) return { status: 'unchanged' } as const;
 
-      const sermons = unseen.map((upload) => {
-        const structured = this.parseStructuredTitle(upload.title);
+      const sermons = unseen.map(({ upload, metadata }) => {
         return repository.create({
-          title: structured?.title ?? upload.title.slice(0, TITLE_MAX_LENGTH),
-          publishedAt:
-            structured?.publishedAt ??
-            this.toSeoulCalendarDate(upload.publishedAt),
+          title: metadata.title,
+          publishedAt: metadata.publishedAt,
           youtubeVideoId: upload.youtubeVideoId,
-          preacherName: structured?.preacherName ?? preacherName,
+          preacherName: metadata.preacherName,
           summary: null,
-          bibleReference: structured?.bibleReference ?? null,
+          bibleReference: metadata.bibleReference,
           createdByAdminId: null,
         });
       });
@@ -118,7 +111,7 @@ export class SermonYoutubeSyncService {
       return {
         status: 'created',
         count: sermons.length,
-        youtubeVideoIds: unseen.map((upload) => upload.youtubeVideoId),
+        youtubeVideoIds: unseen.map(({ upload }) => upload.youtubeVideoId),
       } as const;
     });
   }
@@ -184,17 +177,5 @@ export class SermonYoutubeSyncService {
       preacherName,
       bibleReference,
     };
-  }
-
-  private toSeoulCalendarDate(timestamp: string): string {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'Asia/Seoul',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).formatToParts(new Date(timestamp));
-    const part = (type: Intl.DateTimeFormatPartTypes) =>
-      parts.find((item) => item.type === type)?.value ?? '';
-    return `${part('year')}-${part('month')}-${part('day')}`;
   }
 }

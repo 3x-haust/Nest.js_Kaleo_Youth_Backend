@@ -16,7 +16,7 @@ const CHANNEL = '@kaleo-youth';
 function upload(
   youtubeVideoId: string,
   publishedAt: string,
-  title = `Title ${youtubeVideoId}`,
+  title = `2026. 8. 23. 박정인 목사. 잠 31:16-20. Title ${youtubeVideoId}`,
 ): YoutubeChannelUpload {
   return {
     youtubeVideoId,
@@ -135,59 +135,55 @@ describe('SermonYoutubeSyncService', () => {
     );
   });
 
-  it('uses upload metadata when a structured title has an invalid calendar date', async () => {
+  it.each([
+    ['plain upload title', '청소년부 여름수련회 후기영상'],
+    ['missing sermon title segment', '2026. 8. 23. 박정인 목사. 잠 31:16-20'],
+  ])('ignores %s', async (_caseName, youtubeTitle) => {
+    const harness = createHarness([
+      upload('malformed-video', '2026-08-22T15:30:00.000Z', youtubeTitle),
+    ]);
+
+    await expect(harness.service.sync()).resolves.toEqual({
+      status: 'unchanged',
+    });
+    expect(harness.dataSource.transaction).not.toHaveBeenCalled();
+    expect(harness.sermonRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('ignores a structured title with an invalid calendar date', async () => {
     const youtubeTitle =
       '2026. 2. 29. 다른 설교자. 요 3:16. 구조화되지 않아야 하는 제목';
     const harness = createHarness([
       upload('invalid-date-video', '2026-08-22T15:30:00.000Z', youtubeTitle),
     ]);
 
-    await harness.service.sync();
-
-    expect(harness.sermons[0]).toEqual(
-      expect.objectContaining({
-        title: youtubeTitle,
-        publishedAt: '2026-08-23',
-        preacherName: '박정인 목사',
-        bibleReference: null,
-      }),
-    );
+    await expect(harness.service.sync()).resolves.toEqual({
+      status: 'unchanged',
+    });
+    expect(harness.dataSource.transaction).not.toHaveBeenCalled();
   });
 
-  it('uses upload metadata when a structured field exceeds its entity ceiling', async () => {
+  it('ignores a structured title whose field exceeds its entity ceiling', async () => {
     const youtubeTitle = `2026. 8. 23. ${'가'.repeat(51)}. 잠 31:16-20. 설교 제목`;
     const harness = createHarness([
       upload('oversized-field-video', '2026-08-22T15:30:00.000Z', youtubeTitle),
     ]);
 
-    await harness.service.sync();
-
-    expect(harness.sermons[0]).toEqual(
-      expect.objectContaining({
-        title: youtubeTitle.slice(0, 200),
-        publishedAt: '2026-08-23',
-        preacherName: '박정인 목사',
-        bibleReference: null,
-      }),
-    );
+    await expect(harness.service.sync()).resolves.toEqual({
+      status: 'unchanged',
+    });
+    expect(harness.dataSource.transaction).not.toHaveBeenCalled();
   });
 
-  it('stores the publication calendar date in Asia/Seoul', async () => {
+  it('ignores an unstructured title regardless of upload timestamp', async () => {
     const harness = createHarness([
       upload('kst-video', '2026-08-22T15:30:00.000Z', '한국어 설교 제목'),
     ]);
 
-    await harness.service.sync();
-
-    expect(harness.sermonRepository.create).toHaveBeenCalledWith({
-      title: '한국어 설교 제목',
-      publishedAt: '2026-08-23',
-      youtubeVideoId: 'kst-video',
-      preacherName: '박정인 목사',
-      summary: null,
-      bibleReference: null,
-      createdByAdminId: null,
+    await expect(harness.service.sync()).resolves.toEqual({
+      status: 'unchanged',
     });
+    expect(harness.dataSource.transaction).not.toHaveBeenCalled();
   });
 
   it('creates every unseen upload oldest-to-newest under an advisory lock', async () => {
