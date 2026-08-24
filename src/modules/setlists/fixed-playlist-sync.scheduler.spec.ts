@@ -180,4 +180,28 @@ describe('FixedPlaylistSyncService scheduling and concurrency', () => {
       }),
     );
   });
+
+  it('synchronizes once when the application starts', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    const dataSource = { transaction: jest.fn() };
+    const youtube = {
+      isEnabled: jest.fn().mockReturnValue(false),
+    };
+    const service = new FixedPlaylistSyncService(
+      dataSource as unknown as DataSource,
+      youtube as unknown as YoutubeService,
+    );
+    const sync = jest.spyOn(service, 'syncFixedPlaylist').mockResolvedValue({
+      status: 'skipped',
+      reason: 'youtube_disabled',
+    });
+
+    try {
+      await service.onApplicationBootstrap();
+      expect(sync).toHaveBeenCalledTimes(1);
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+  });
 });

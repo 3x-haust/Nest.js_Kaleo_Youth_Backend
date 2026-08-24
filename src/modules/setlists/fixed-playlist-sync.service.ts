@@ -1,7 +1,16 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  type OnApplicationBootstrap,
+} from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { DataSource, LessThanOrEqual } from 'typeorm';
-import { Setlist, SetlistSong, SetlistSyncStatus } from '../../entities';
+import {
+  Setlist,
+  SetlistSong,
+  SetlistSyncStatus,
+  WorshipTeam,
+} from '../../entities';
 import { YoutubeService, type ImportedSong } from '../youtube/youtube.service';
 
 export const FIXED_PLAYLIST_ID = 'PLiH1f3x84aAhtvZKpSXuxeFP8DdZZakOY' as const;
@@ -9,7 +18,7 @@ export const FIXED_PLAYLIST_ID = 'PLiH1f3x84aAhtvZKpSXuxeFP8DdZZakOY' as const;
 export type FixedPlaylistSyncResult =
   | {
       readonly status: 'skipped';
-      readonly reason: 'youtube_disabled' | 'no_baseline';
+      readonly reason: 'youtube_disabled' | 'no_team';
     }
   | {
       readonly status: 'unchanged';
@@ -29,11 +38,26 @@ type PreservedSongMetadata = {
 };
 
 @Injectable()
-export class FixedPlaylistSyncService {
+export class FixedPlaylistSyncService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(FixedPlaylistSyncService.name);
+
   constructor(
     private readonly dataSource: DataSource,
     private readonly youtube: YoutubeService,
   ) {}
+
+  async onApplicationBootstrap(): Promise<void> {
+    if (process.env.NODE_ENV === 'test') return;
+    try {
+      const result = await this.syncFixedPlaylist();
+      this.logger.log(`Fixed playlist startup sync: ${result.status}`);
+    } catch (error) {
+      this.logger.error(
+        'Fixed playlist startup sync failed',
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
+  }
 
   @Cron('0 3 * * *', { timeZone: 'Asia/Seoul' })
   async syncFixedPlaylist(
@@ -69,8 +93,16 @@ export class FixedPlaylistSyncService {
         });
         baseline = fallback[0] ?? null;
       }
+      let bootstrapTeamId: string | null = null;
       if (!baseline) {
-        return { status: 'skipped', reason: 'no_baseline' };
+        const teams = await manager.getRepository(WorshipTeam).find({
+          order: { createdAt: 'ASC', id: 'ASC' },
+          take: 1,
+        });
+        bootstrapTeamId = teams[0]?.id ?? null;
+        if (!bootstrapTeamId) {
+          return { status: 'skipped', reason: 'no_team' };
+        }
       }
 
       const serviceDate = this.nextSunday(currentDate);
@@ -88,7 +120,7 @@ export class FixedPlaylistSyncService {
       const importedSongs = [...imported.songs].sort(
         (left, right) => left.displayOrder - right.displayOrder,
       );
-      const currentSongs = [...(current.songs ?? [])].sort(
+      const currentSongs = [...(current?.songs ?? [])].sort(
         (left, right) => left.displayOrder - right.displayOrder,
       );
       const hasSameOrder = this.hasSameCanonicalOrder(
@@ -96,8 +128,9 @@ export class FixedPlaylistSyncService {
         importedSongs,
       );
       const playlistTitle =
-        imported.playlistTitle ?? current.youtubePlaylistTitle;
+        imported.playlistTitle ?? current?.youtubePlaylistTitle ?? null;
       if (
+        current &&
         hasSameOrder &&
         this.hasSameImportedMetadata(
           current,
@@ -120,9 +153,9 @@ export class FixedPlaylistSyncService {
           )
         : await setlistRepository.save(
             setlistRepository.create({
-              teamId: baseline.teamId,
+              teamId: baseline?.teamId ?? bootstrapTeamId,
               serviceDate,
-              title: baseline.title,
+              title: baseline?.title ?? '주일예배 찬양 콘티',
               fileUrl: null,
               youtubePlaylistId: FIXED_PLAYLIST_ID,
               youtubePlaylistTitle: playlistTitle,

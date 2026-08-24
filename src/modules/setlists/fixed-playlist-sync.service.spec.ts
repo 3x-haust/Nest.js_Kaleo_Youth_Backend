@@ -1,5 +1,10 @@
 import { DataSource, EntityManager } from 'typeorm';
-import { Setlist, SetlistSong, SetlistSyncStatus } from '../../entities';
+import {
+  Setlist,
+  SetlistSong,
+  SetlistSyncStatus,
+  WorshipTeam,
+} from '../../entities';
 import {
   YoutubeService,
   type ImportedSong,
@@ -88,10 +93,18 @@ function createHarness(latest: Setlist | null, result = importResult(['a'])) {
     delete: jest.fn().mockResolvedValue({ affected: 1, raw: [] }),
     save: jest.fn((value: SetlistSong[]) => Promise.resolve(value)),
   };
+  const teamRepository = {
+    find: jest.fn().mockResolvedValue([{ id: 'team-id' } as WorshipTeam]),
+  };
   const manager = {
     query: jest.fn().mockResolvedValue(undefined),
-    getRepository: jest.fn((entity: typeof Setlist | typeof SetlistSong) =>
-      entity === Setlist ? setlistRepository : songRepository,
+    getRepository: jest.fn(
+      (entity: typeof Setlist | typeof SetlistSong | typeof WorshipTeam) =>
+        entity === Setlist
+          ? setlistRepository
+          : entity === SetlistSong
+            ? songRepository
+            : teamRepository,
     ),
   };
   const dataSource = {
@@ -116,6 +129,7 @@ function createHarness(latest: Setlist | null, result = importResult(['a'])) {
     manager,
     setlistRepository,
     songRepository,
+    teamRepository,
   };
 }
 
@@ -165,14 +179,38 @@ describe('FixedPlaylistSyncService', () => {
     );
   });
 
-  it('skips only when no setlist exists to bootstrap from', async () => {
+  it('bootstraps from the worship team when no setlist exists', async () => {
     const harness = createHarness(null);
 
     const result = await harness.service.syncFixedPlaylist(
       new Date('2026-08-23T03:00:00+09:00'),
     );
 
-    expect(result).toEqual({ status: 'skipped', reason: 'no_baseline' });
+    expect(result).toEqual({
+      status: 'created',
+      setlistId: 'created-id',
+      serviceDate: '2026-08-30',
+      songCount: 1,
+    });
+    expect(harness.setlistRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        teamId: 'team-id',
+        serviceDate: '2026-08-30',
+        title: '주일예배 찬양 콘티',
+        youtubePlaylistId: FIXED_PLAYLIST_ID,
+      }),
+    );
+  });
+
+  it('skips only when no worship team exists', async () => {
+    const harness = createHarness(null);
+    harness.teamRepository.find.mockResolvedValue([]);
+
+    const result = await harness.service.syncFixedPlaylist(
+      new Date('2026-08-23T03:00:00+09:00'),
+    );
+
+    expect(result).toEqual({ status: 'skipped', reason: 'no_team' });
     expect(harness.setlistRepository.save).not.toHaveBeenCalled();
   });
 
