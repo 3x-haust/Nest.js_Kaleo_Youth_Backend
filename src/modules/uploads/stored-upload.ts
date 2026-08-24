@@ -11,6 +11,8 @@ const WEBP_OPTIONS = {
   smartSubsample: true,
 } as const;
 
+let previousEncoding = Promise.resolve();
+
 export type StoredUpload = {
   readonly path: string;
   readonly filename: string;
@@ -19,31 +21,59 @@ export type StoredUpload = {
   readonly size: number;
 };
 
+async function runEncodingExclusively<T>(work: () => Promise<T>): Promise<T> {
+  const waitForPrevious = previousEncoding;
+  let release: () => void = () => {};
+  previousEncoding = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await waitForPrevious;
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
+
 export async function encodeImageAsWebp(
   inputPath: string,
   outputPath: string,
 ): Promise<number> {
-  const temporaryPath = `${outputPath}.${randomUUID()}.tmp`;
-  try {
-    const result = await sharp(inputPath, { animated: true })
-      .rotate()
-      .webp(WEBP_OPTIONS)
-      .toFile(temporaryPath);
-    await rename(temporaryPath, outputPath);
-    return result.size;
-  } catch (error) {
-    await unlink(temporaryPath).catch((cleanupError: unknown) => {
-      if (
-        cleanupError instanceof Error &&
-        'code' in cleanupError &&
-        cleanupError.code === 'ENOENT'
-      ) {
-        return;
-      }
-      throw cleanupError;
-    });
-    throw error;
-  }
+  return runEncodingExclusively(async () => {
+    const temporaryPath = `${outputPath}.${randomUUID()}.tmp`;
+    try {
+      const result = await sharp(inputPath, { animated: true })
+        .rotate()
+        .webp(WEBP_OPTIONS)
+        .toFile(temporaryPath);
+      await rename(temporaryPath, outputPath);
+      return result.size;
+    } catch (error) {
+      await unlink(temporaryPath).catch((cleanupError: unknown) => {
+        if (
+          cleanupError instanceof Error &&
+          'code' in cleanupError &&
+          cleanupError.code === 'ENOENT'
+        ) {
+          return;
+        }
+        throw cleanupError;
+      });
+      throw error;
+    }
+  });
+}
+
+async function isReusableWebp(file: Express.Multer.File): Promise<boolean> {
+  if (file.mimetype !== 'image/webp') return false;
+  const metadata = await sharp(file.path, { animated: true }).metadata();
+  return (
+    metadata.format === 'webp' &&
+    !metadata.exif &&
+    !metadata.icc &&
+    !metadata.iptc &&
+    !metadata.xmp
+  );
 }
 
 export async function normalizeStoredUpload(
@@ -59,6 +89,16 @@ export async function normalizeStoredUpload(
       originalName: file.originalname,
       mimetype: file.mimetype,
       size: validated.length,
+    };
+  }
+
+  if (await isReusableWebp(file)) {
+    return {
+      path: file.path,
+      filename: file.filename,
+      originalName: file.originalname,
+      mimetype: 'image/webp',
+      size: file.size,
     };
   }
 
