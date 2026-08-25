@@ -2,6 +2,7 @@ import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import sharp from 'sharp';
+import decodeHeic from 'heic-decode';
 import { stripImageMetadata } from '../../common/utils/image-metadata.util';
 
 const WEBP_OPTIONS = {
@@ -35,14 +36,39 @@ async function runEncodingExclusively<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
+const HEIF_MIME_TYPES = new Set([
+  'image/heic',
+  'image/heif',
+  'image/heic-sequence',
+  'image/heif-sequence',
+]);
+
+async function imagePipeline(inputPath: string, mimeType?: string) {
+  if (!mimeType || !HEIF_MIME_TYPES.has(mimeType)) {
+    return sharp(inputPath, { animated: true });
+  }
+
+  const decoded = await decodeHeic({ buffer: await readFile(inputPath) });
+  return sharp(decoded.data, {
+    raw: {
+      width: decoded.width,
+      height: decoded.height,
+      channels: 4,
+    },
+  });
+}
+
 export async function encodeImageAsWebp(
   inputPath: string,
   outputPath: string,
+  mimeType?: string,
 ): Promise<number> {
   return runEncodingExclusively(async () => {
     const temporaryPath = `${outputPath}.${randomUUID()}.tmp`;
     try {
-      const result = await sharp(inputPath, { animated: true })
+      const result = await (
+        await imagePipeline(inputPath, mimeType)
+      )
         .rotate()
         .webp(WEBP_OPTIONS)
         .toFile(temporaryPath);
@@ -104,7 +130,7 @@ export async function normalizeStoredUpload(
   const extension = extname(file.filename);
   const filename = `${file.filename.slice(0, -extension.length)}.webp`;
   const outputPath = `${file.path.slice(0, -extension.length)}.webp`;
-  const size = await encodeImageAsWebp(file.path, outputPath);
+  const size = await encodeImageAsWebp(file.path, outputPath, file.mimetype);
   if (outputPath !== file.path) await unlink(file.path);
   return {
     path: outputPath,

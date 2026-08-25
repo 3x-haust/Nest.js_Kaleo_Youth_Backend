@@ -14,6 +14,8 @@ const ALLOWED: Record<string, string[]> = {
   '.jpeg': ['image/jpeg'],
   '.png': ['image/png'],
   '.webp': ['image/webp'],
+  '.heic': ['image/heic', 'image/heic-sequence'],
+  '.heif': ['image/heif', 'image/heif-sequence'],
   '.pdf': ['application/pdf'],
 };
 
