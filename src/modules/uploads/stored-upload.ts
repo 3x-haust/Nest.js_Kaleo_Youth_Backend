@@ -12,7 +12,9 @@ const WEBP_OPTIONS = {
   smartSubsample: true,
 } as const;
 
-let previousEncoding = Promise.resolve();
+const MAX_PARALLEL_ENCODINGS = 2;
+let activeEncodings = 0;
+const encodingWaiters: Array<() => void> = [];
 
 export type StoredUpload = {
   readonly path: string;
@@ -22,17 +24,18 @@ export type StoredUpload = {
   readonly size: number;
 };
 
-async function runEncodingExclusively<T>(work: () => Promise<T>): Promise<T> {
-  const waitForPrevious = previousEncoding;
-  let release: () => void = () => {};
-  previousEncoding = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await waitForPrevious;
+async function runEncodingLimited<T>(work: () => Promise<T>): Promise<T> {
+  if (activeEncodings >= MAX_PARALLEL_ENCODINGS) {
+    await new Promise<void>((resolve) => {
+      encodingWaiters.push(resolve);
+    });
+  }
+  activeEncodings += 1;
   try {
     return await work();
   } finally {
-    release();
+    activeEncodings -= 1;
+    encodingWaiters.shift()?.();
   }
 }
 
@@ -63,7 +66,7 @@ export async function encodeImageAsWebp(
   outputPath: string,
   mimeType?: string,
 ): Promise<number> {
-  return runEncodingExclusively(async () => {
+  return runEncodingLimited(async () => {
     const temporaryPath = `${outputPath}.${randomUUID()}.tmp`;
     try {
       const result = await (

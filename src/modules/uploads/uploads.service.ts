@@ -34,18 +34,12 @@ export class UploadsService {
     const saved: Attachment[] = [];
     const storedPaths: string[] = [];
     try {
+      const normalized = await this.normalizeBatch(files, (path) => {
+        storedPaths.push(path);
+      });
       const registered = await this.repository.manager.transaction(
         async (manager) => {
-          for (const file of files) {
-            let stored: StoredUpload;
-            try {
-              stored = await normalizeStoredUpload(file);
-            } catch {
-              throw new BadRequestException(
-                '파일 내용이 선택한 파일 형식과 일치하지 않습니다.',
-              );
-            }
-            storedPaths.push(stored.path);
+          for (const stored of normalized) {
             saved.push(
               await this.register(stored, ownerType, actor.id, manager),
             );
@@ -73,6 +67,39 @@ export class UploadsService {
       );
       throw error;
     }
+  }
+
+  private async normalizeBatch(
+    files: readonly Express.Multer.File[],
+    onNormalized: (path: string) => void,
+  ): Promise<StoredUpload[]> {
+    const normalized: StoredUpload[] = Array.from({ length: files.length });
+    let cursor = 0;
+    let failure: unknown;
+
+    const worker = async () => {
+      while (!failure && cursor < files.length) {
+        const index = cursor;
+        cursor += 1;
+        try {
+          const stored = await normalizeStoredUpload(files[index]);
+          normalized[index] = stored;
+          onNormalized(stored.path);
+        } catch (error) {
+          failure = error;
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(2, files.length) }, () => worker()),
+    );
+    if (failure) {
+      throw new BadRequestException(
+        '파일 내용이 선택한 파일 형식과 일치하지 않습니다.',
+      );
+    }
+    return normalized;
   }
 
   private async register(
