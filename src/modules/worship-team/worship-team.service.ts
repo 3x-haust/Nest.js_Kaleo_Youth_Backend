@@ -22,6 +22,7 @@ import { UploadsService } from '../uploads/uploads.service';
 import type { ActorInfo } from '../sermons/sermons.service';
 import type {
   CreateMemberDto,
+  ReorderMembersDto,
   UpdateMemberDto,
   UpdateTeamDto,
 } from './dto/worship-team.dto';
@@ -115,6 +116,55 @@ export class WorshipTeamService implements OnModuleInit {
       request,
     });
     return this.findOne(saved.id);
+  }
+
+  async reorderMembers(
+    teamId: string,
+    dto: ReorderMembersDto,
+    actor: ActorInfo,
+    request: Request,
+  ): Promise<WorshipTeamMember[]> {
+    const team = await this.findOne(teamId);
+
+    const members = await this.memberRepository.manager.transaction(
+      async (manager) => {
+        const repository = manager.getRepository(WorshipTeamMember);
+        const currentMembers = await repository.find({ where: { teamId } });
+        const requestedIds = new Set(dto.memberIds);
+        const currentIds = new Set(currentMembers.map((member) => member.id));
+        const exactlyMatches =
+          requestedIds.size === dto.memberIds.length &&
+          dto.memberIds.length === currentMembers.length &&
+          dto.memberIds.every((id) => currentIds.has(id));
+
+        if (!exactlyMatches) {
+          throw new BadRequestException(
+            '팀원 순서에는 해당 팀의 모든 팀원이 중복 없이 포함되어야 합니다.',
+          );
+        }
+
+        const membersById = new Map(
+          currentMembers.map((member) => [member.id, member]),
+        );
+        const reordered = dto.memberIds.map((id, displayOrder) => {
+          const member = membersById.get(id)!;
+          member.displayOrder = displayOrder;
+          return member;
+        });
+        return repository.save(reordered);
+      },
+    );
+
+    await this.auditLogs.record({
+      action: AuditAction.TEAM_UPDATE,
+      adminId: actor.id,
+      adminLoginId: actor.loginId,
+      targetType: 'worship_team',
+      targetId: team.id,
+      detail: `${team.name} 팀원 순서 변경`,
+      request,
+    });
+    return this.sortMembers(members);
   }
 
   async addMember(

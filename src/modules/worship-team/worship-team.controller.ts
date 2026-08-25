@@ -16,6 +16,7 @@ import { AdminGuard } from '../../common/guards/admin.guard';
 import type { AccessTokenPayload } from '../../common/types/authenticated-request';
 import {
   CreateMemberDto,
+  ReorderMembersDto,
   UpdateMemberDto,
   UpdateTeamDto,
 } from './dto/worship-team.dto';
@@ -50,6 +51,22 @@ export class WorshipTeamController {
     @Req() request: Request,
   ) {
     return this.worshipTeamService.updateTeam(
+      id,
+      dto,
+      { id: admin.sub, loginId: admin.loginId },
+      request,
+    );
+  }
+
+  @Patch(':id/members/order')
+  @UseGuards(AdminGuard)
+  reorderMembers(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReorderMembersDto,
+    @CurrentAdmin() admin: AccessTokenPayload,
+    @Req() request: Request,
+  ) {
+    return this.worshipTeamService.reorderMembers(
       id,
       dto,
       { id: admin.sub, loginId: admin.loginId },

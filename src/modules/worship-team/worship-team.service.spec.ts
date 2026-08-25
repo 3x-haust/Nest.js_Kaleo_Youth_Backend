@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import type { Request } from 'express';
 import {
   AttachmentOwnerType,
+  AuditAction,
   WorshipTeam,
   WorshipTeamMember,
 } from '../../entities';
@@ -159,5 +160,119 @@ describe('WorshipTeamService member media', () => {
     );
     expect(saved.bio).toBe('새 소개');
     expect(saved.photoUrl).toBe('/uploads/new.jpg');
+  });
+});
+
+describe('WorshipTeamService member ordering', () => {
+  const teamId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const firstId = '11111111-1111-4111-8111-111111111111';
+  const secondId = '22222222-2222-4222-8222-222222222222';
+  const foreignId = '33333333-3333-4333-8333-333333333333';
+
+  async function setup() {
+    const team = Object.assign(new WorshipTeam(), {
+      id: teamId,
+      name: 'J-Teen',
+      members: [],
+    });
+    const members = [
+      Object.assign(new WorshipTeamMember(), {
+        id: firstId,
+        teamId,
+        name: '첫째',
+        displayOrder: 0,
+      }),
+      Object.assign(new WorshipTeamMember(), {
+        id: secondId,
+        teamId,
+        name: '둘째',
+        displayOrder: 1,
+      }),
+    ];
+    const transactionalRepository = {
+      find: jest.fn().mockResolvedValue(members),
+      save: jest
+        .fn()
+        .mockImplementation((values: WorshipTeamMember[]) =>
+          Promise.resolve(values),
+        ),
+    };
+    const manager = {
+      getRepository: jest.fn().mockReturnValue(transactionalRepository),
+    };
+    const memberRepository = {
+      manager: {
+        transaction: jest
+          .fn()
+          .mockImplementation((work: (value: typeof manager) => unknown) =>
+            work(manager),
+          ),
+      },
+    };
+    const auditLogs = { record: jest.fn().mockResolvedValue(undefined) };
+    const module = await Test.createTestingModule({
+      providers: [
+        WorshipTeamService,
+        {
+          provide: getRepositoryToken(WorshipTeam),
+          useValue: { findOne: jest.fn().mockResolvedValue(team) },
+        },
+        {
+          provide: getRepositoryToken(WorshipTeamMember),
+          useValue: memberRepository,
+        },
+        { provide: AuditLogsService, useValue: auditLogs },
+        { provide: UploadsService, useValue: {} },
+      ],
+    }).compile();
+
+    return {
+      service: module.get(WorshipTeamService),
+      members,
+      transactionalRepository,
+      auditLogs,
+    };
+  }
+
+  it('atomically assigns sequential display orders and audits the update', async () => {
+    const { service, members, transactionalRepository, auditLogs } =
+      await setup();
+
+    const result = await service.reorderMembers(
+      teamId,
+      { memberIds: [secondId, firstId] },
+      actor,
+      request,
+    );
+
+    expect(transactionalRepository.save).toHaveBeenCalledWith([
+      expect.objectContaining({ id: secondId, displayOrder: 0 }),
+      expect.objectContaining({ id: firstId, displayOrder: 1 }),
+    ]);
+    expect(result.map((member) => member.id)).toEqual([secondId, firstId]);
+    expect(members.map((member) => member.displayOrder)).toEqual([1, 0]);
+    expect(auditLogs.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: AuditAction.TEAM_UPDATE,
+        targetType: 'worship_team',
+        targetId: teamId,
+        adminId: actor.id,
+        request,
+      }),
+    );
+  });
+
+  it.each([
+    ['a missing ID', [firstId]],
+    ['a foreign ID', [firstId, foreignId]],
+    ['a duplicate ID', [firstId, firstId]],
+  ])('rejects %s without writing', async (_case, memberIds) => {
+    const { service, transactionalRepository, auditLogs } = await setup();
+
+    await expect(
+      service.reorderMembers(teamId, { memberIds }, actor, request),
+    ).rejects.toThrow('모든 팀원이 중복 없이 포함되어야 합니다');
+    expect(transactionalRepository.save).not.toHaveBeenCalled();
+    expect(auditLogs.record).not.toHaveBeenCalled();
   });
 });

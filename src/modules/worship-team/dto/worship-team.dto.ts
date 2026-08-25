@@ -1,6 +1,7 @@
 import { PartialType } from '@nestjs/mapped-types';
 import { Type } from 'class-transformer';
 import {
+  ArrayUnique,
   IsArray,
   IsInt,
   IsOptional,
@@ -74,3 +75,10 @@ export class CreateMemberDto {
 }
 
 export class UpdateMemberDto extends PartialType(CreateMemberDto) {}
+
+export class ReorderMembersDto {
+  @IsArray()
+  @ArrayUnique()
+  @IsUUID('4', { each: true })
+  memberIds: string[];
+}
