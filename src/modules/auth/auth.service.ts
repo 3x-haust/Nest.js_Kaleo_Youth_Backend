@@ -14,6 +14,7 @@ import type { CookieOptions, Request, Response } from 'express';
 import {
   ACCESS_TOKEN_COOKIE,
   CSRF_COOKIE,
+  LEGACY_REFRESH_TOKEN_COOKIE_PATH,
   REFRESH_TOKEN_COOKIE,
   REFRESH_TOKEN_COOKIE_PATH,
 } from '../../common/constants';
@@ -313,6 +314,10 @@ export class AuthService {
       accessToken,
       this.cookieOptions(accessTtlMs),
     );
+    response.clearCookie(REFRESH_TOKEN_COOKIE, {
+      ...this.cookieOptions(0),
+      path: LEGACY_REFRESH_TOKEN_COOKIE_PATH,
+    });
     response.cookie(REFRESH_TOKEN_COOKIE, refreshToken, {
       ...this.cookieOptions(refreshTtlMs),
       path: REFRESH_TOKEN_COOKIE_PATH,
@@ -343,6 +348,10 @@ export class AuthService {
     response.clearCookie(REFRESH_TOKEN_COOKIE, {
       ...base,
       path: REFRESH_TOKEN_COOKIE_PATH,
+    });
+    response.clearCookie(REFRESH_TOKEN_COOKIE, {
+      ...base,
+      path: LEGACY_REFRESH_TOKEN_COOKIE_PATH,
     });
     response.clearCookie(CSRF_COOKIE, { ...base, httpOnly: false, path: '/' });
   }

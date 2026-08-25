@@ -8,7 +8,8 @@ export const REFRESH_TOKEN_COOKIE = 'kaleo_rt';
  * Refresh Token 쿠키는 재발급/로그아웃 경로에서만 전송되도록 범위를 좁힙니다.
  * 일반 API 요청마다 장기 토큰이 네트워크를 오가지 않게 하기 위함입니다.
  */
-export const REFRESH_TOKEN_COOKIE_PATH = `/${API_PREFIX}/auth`;
+export const REFRESH_TOKEN_COOKIE_PATH = '/';
+export const LEGACY_REFRESH_TOKEN_COOKIE_PATH = `/${API_PREFIX}/auth`;
 
 /**
  * CSRF Double Submit Cookie 패턴에 쓰이는 쌍.
