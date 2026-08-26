@@ -76,10 +76,24 @@ async function convertHeifNative(
   const converter = process.env.HEIF_CONVERT_BIN ?? 'heif-convert';
   const started = performance.now();
   try {
-    await execFileAsync(converter, [inputPath, decodedPath], {
-      timeout: HEIF_CONVERT_TIMEOUT_MS,
-      maxBuffer: 1024 * 1024,
-    });
+    await execFileAsync(
+      converter,
+      [
+        '--quiet',
+        '--codec-threads',
+        '1',
+        '--tile-threads',
+        '1',
+        '-q',
+        '95',
+        inputPath,
+        decodedPath,
+      ],
+      {
+        timeout: HEIF_CONVERT_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024,
+      },
+    );
     logger.log({
       event: 'heif.native-convert',
       elapsedMs: Math.round(performance.now() - started),
@@ -127,7 +141,7 @@ export async function encodeImageAsWebp(
 ): Promise<number> {
   return runEncodingLimited(async () => {
     const temporaryPath = `${outputPath}.${randomUUID()}.tmp`;
-    const decodedPath = `${temporaryPath}.png`;
+    const decodedPath = `${temporaryPath}.jpg`;
     try {
       const result = await (
         await imagePipeline(inputPath, mimeType, decodedPath)

@@ -125,7 +125,8 @@ describe('normalizeStoredUpload', () => {
     const inputPath = join(uploadDir, 'incoming.heic');
     const outputPath = join(uploadDir, 'normalized.webp');
     const converterPath = join(uploadDir, 'fake-heif-convert.cjs');
-    const decodedPng = await sharp({
+    const converterArgsPath = `${inputPath}.args`;
+    const decodedJpeg = await sharp({
       create: {
         width: 32,
         height: 24,
@@ -141,7 +142,9 @@ describe('normalizeStoredUpload', () => {
       [
         '#!/usr/bin/env node',
         "const { writeFileSync } = require('node:fs');",
-        `writeFileSync(process.argv[3], Buffer.from('${decodedPng.toString('base64')}', 'base64'));`,
+        'const args = process.argv.slice(2);',
+        'writeFileSync(`${args.at(-2)}.args`, JSON.stringify(args));',
+        `writeFileSync(process.argv.at(-1), Buffer.from('${decodedJpeg.toString('base64')}', 'base64'));`,
       ].join('\n'),
     );
     await chmod(converterPath, 0o755);
@@ -151,12 +154,26 @@ describe('normalizeStoredUpload', () => {
     try {
       await encodeImageAsWebp(inputPath, outputPath, 'image/heic');
       const metadata = await sharp(outputPath).metadata();
+      const converterArgs = JSON.parse(
+        await readFile(converterArgsPath, 'utf8'),
+      ) as string[];
 
       expect(metadata).toMatchObject({
         format: 'webp',
         width: 32,
         height: 24,
       });
+      expect(converterArgs.slice(0, -2)).toEqual([
+        '--quiet',
+        '--codec-threads',
+        '1',
+        '--tile-threads',
+        '1',
+        '-q',
+        '95',
+      ]);
+      expect(converterArgs.at(-2)).toBe(inputPath);
+      expect(converterArgs.at(-1)).toMatch(/\.jpg$/);
     } finally {
       if (previousConverter === undefined) {
         delete process.env.HEIF_CONVERT_BIN;
