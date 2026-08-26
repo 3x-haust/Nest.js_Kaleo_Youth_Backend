@@ -12,7 +12,7 @@ const WEBP_OPTIONS = {
   smartSubsample: true,
 } as const;
 
-const MAX_PARALLEL_ENCODINGS = 2;
+const MAX_PARALLEL_ENCODINGS = 1;
 let activeEncodings = 0;
 const encodingWaiters: Array<() => void> = [];
 
