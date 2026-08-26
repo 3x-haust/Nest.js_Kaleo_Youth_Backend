@@ -128,8 +128,8 @@ describe('normalizeStoredUpload', () => {
     const converterArgsPath = `${inputPath}.args`;
     const decodedJpeg = await sharp({
       create: {
-        width: 32,
-        height: 24,
+        width: 4000,
+        height: 3000,
         channels: 4,
         background: { r: 25, g: 50, b: 79, alpha: 1 },
       },
@@ -160,8 +160,8 @@ describe('normalizeStoredUpload', () => {
 
       expect(metadata).toMatchObject({
         format: 'webp',
-        width: 32,
-        height: 24,
+        width: 1024,
+        height: 768,
       });
       expect(converterArgs.slice(0, -2)).toEqual([
         '--quiet',

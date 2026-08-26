@@ -16,6 +16,7 @@ const WEBP_OPTIONS = {
 } as const;
 
 const MAX_IMAGE_EDGE = 2560;
+const MAX_HEIF_IMAGE_EDGE = 1024;
 const MAX_PARALLEL_ENCODINGS = 1;
 const HEIF_CONVERT_TIMEOUT_MS = 90_000;
 const execFileAsync = promisify(execFile);
@@ -142,14 +143,18 @@ export async function encodeImageAsWebp(
   return runEncodingLimited(async () => {
     const temporaryPath = `${outputPath}.${randomUUID()}.tmp`;
     const decodedPath = `${temporaryPath}.jpg`;
+    const maximumEdge =
+      mimeType && HEIF_MIME_TYPES.has(mimeType)
+        ? MAX_HEIF_IMAGE_EDGE
+        : MAX_IMAGE_EDGE;
     try {
       const result = await (
         await imagePipeline(inputPath, mimeType, decodedPath)
       )
         .rotate()
         .resize({
-          width: MAX_IMAGE_EDGE,
-          height: MAX_IMAGE_EDGE,
+          width: maximumEdge,
+          height: maximumEdge,
           fit: 'inside',
           withoutEnlargement: true,
         })
