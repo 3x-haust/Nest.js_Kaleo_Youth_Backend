@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
-import { normalizeStoredUpload } from './stored-upload';
+import { encodeImageAsWebp, normalizeStoredUpload } from './stored-upload';
 
 describe('normalizeStoredUpload', () => {
   it('decodes a real HEIC fixture and stores only normalized WebP', async () => {
@@ -116,6 +116,53 @@ describe('normalizeStoredUpload', () => {
         height: 1920,
       });
     } finally {
+      await rm(uploadDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses an isolated external converter for HEIC input', async () => {
+    const uploadDir = await mkdtemp(join(tmpdir(), 'kaleo-native-heic-'));
+    const inputPath = join(uploadDir, 'incoming.heic');
+    const outputPath = join(uploadDir, 'normalized.webp');
+    const converterPath = join(uploadDir, 'fake-heif-convert.cjs');
+    const decodedPng = await sharp({
+      create: {
+        width: 32,
+        height: 24,
+        channels: 4,
+        background: { r: 25, g: 50, b: 79, alpha: 1 },
+      },
+    })
+      .png()
+      .toBuffer();
+    await writeFile(inputPath, Buffer.from('converter must read this path'));
+    await writeFile(
+      converterPath,
+      [
+        '#!/usr/bin/env node',
+        "const { writeFileSync } = require('node:fs');",
+        `writeFileSync(process.argv[3], Buffer.from('${decodedPng.toString('base64')}', 'base64'));`,
+      ].join('\n'),
+    );
+    await chmod(converterPath, 0o755);
+    const previousConverter = process.env.HEIF_CONVERT_BIN;
+    process.env.HEIF_CONVERT_BIN = converterPath;
+
+    try {
+      await encodeImageAsWebp(inputPath, outputPath, 'image/heic');
+      const metadata = await sharp(outputPath).metadata();
+
+      expect(metadata).toMatchObject({
+        format: 'webp',
+        width: 32,
+        height: 24,
+      });
+    } finally {
+      if (previousConverter === undefined) {
+        delete process.env.HEIF_CONVERT_BIN;
+      } else {
+        process.env.HEIF_CONVERT_BIN = previousConverter;
+      }
       await rm(uploadDir, { recursive: true, force: true });
     }
   });

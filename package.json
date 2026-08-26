@@ -6,6 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
+    "preinstall": "node -e \"const{existsSync}=require('node:fs');const{spawnSync}=require('node:child_process');if(process.platform==='linux'&&existsSync('/sbin/apk')){const result=spawnSync('/sbin/apk',['add','--no-cache','libheif-tools'],{stdio:'inherit'});process.exit(result.status??1)}\"",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",

@@ -1,6 +1,9 @@
 import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { Logger } from '@nestjs/common';
 import { extname } from 'node:path';
+import { promisify } from 'node:util';
 import sharp from 'sharp';
 import decodeHeic from 'heic-decode';
 import { stripImageMetadata } from '../../common/utils/image-metadata.util';
@@ -14,6 +17,9 @@ const WEBP_OPTIONS = {
 
 const MAX_IMAGE_EDGE = 2560;
 const MAX_PARALLEL_ENCODINGS = 1;
+const HEIF_CONVERT_TIMEOUT_MS = 90_000;
+const execFileAsync = promisify(execFile);
+const logger = new Logger('StoredUpload');
 let activeEncodings = 0;
 const encodingWaiters: Array<() => void> = [];
 
@@ -47,9 +53,61 @@ const HEIF_MIME_TYPES = new Set([
   'image/heif-sequence',
 ]);
 
-async function imagePipeline(inputPath: string, mimeType?: string) {
+function errorCode(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return null;
+  }
+  return typeof error.code === 'string' ? error.code : null;
+}
+
+async function removeIfExists(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return;
+    throw error;
+  }
+}
+
+async function convertHeifNative(
+  inputPath: string,
+  decodedPath: string,
+): Promise<boolean> {
+  const converter = process.env.HEIF_CONVERT_BIN ?? 'heif-convert';
+  const started = performance.now();
+  try {
+    await execFileAsync(converter, [inputPath, decodedPath], {
+      timeout: HEIF_CONVERT_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    });
+    logger.log({
+      event: 'heif.native-convert',
+      elapsedMs: Math.round(performance.now() - started),
+      rssBytes: process.memoryUsage().rss,
+    });
+    return true;
+  } catch (error) {
+    if (
+      errorCode(error) === 'ENOENT' &&
+      process.env.NODE_ENV !== 'production'
+    ) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function imagePipeline(
+  inputPath: string,
+  mimeType: string | undefined,
+  decodedPath: string,
+) {
   if (!mimeType || !HEIF_MIME_TYPES.has(mimeType)) {
     return sharp(inputPath, { animated: true });
+  }
+
+  if (await convertHeifNative(inputPath, decodedPath)) {
+    return sharp(decodedPath, { animated: true });
   }
 
   const decoded = await decodeHeic({ buffer: await readFile(inputPath) });
@@ -69,9 +127,10 @@ export async function encodeImageAsWebp(
 ): Promise<number> {
   return runEncodingLimited(async () => {
     const temporaryPath = `${outputPath}.${randomUUID()}.tmp`;
+    const decodedPath = `${temporaryPath}.png`;
     try {
       const result = await (
-        await imagePipeline(inputPath, mimeType)
+        await imagePipeline(inputPath, mimeType, decodedPath)
       )
         .rotate()
         .resize({
@@ -85,17 +144,10 @@ export async function encodeImageAsWebp(
       await rename(temporaryPath, outputPath);
       return result.size;
     } catch (error) {
-      await unlink(temporaryPath).catch((cleanupError: unknown) => {
-        if (
-          cleanupError instanceof Error &&
-          'code' in cleanupError &&
-          cleanupError.code === 'ENOENT'
-        ) {
-          return;
-        }
-        throw cleanupError;
-      });
+      await removeIfExists(temporaryPath);
       throw error;
+    } finally {
+      await removeIfExists(decodedPath);
     }
   });
 }
