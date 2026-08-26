@@ -16,7 +16,7 @@ const WEBP_OPTIONS = {
 } as const;
 
 const MAX_IMAGE_EDGE = 2560;
-const MAX_HEIF_IMAGE_EDGE = 1024;
+const MAX_HEIF_IMAGE_EDGE = 960;
 const MAX_PARALLEL_ENCODINGS = 1;
 const HEIF_CONVERT_TIMEOUT_MS = 90_000;
 const execFileAsync = promisify(execFile);
