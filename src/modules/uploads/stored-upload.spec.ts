@@ -78,4 +78,45 @@ describe('normalizeStoredUpload', () => {
       await rm(uploadDir, { recursive: true, force: true });
     }
   });
+
+  it('downscales oversized server-normalized images before storage', async () => {
+    const uploadDir = await mkdtemp(join(tmpdir(), 'kaleo-large-image-'));
+    const filePath = join(uploadDir, 'incoming.jpg');
+    const image = await sharp({
+      create: {
+        width: 4000,
+        height: 3000,
+        channels: 3,
+        background: '#19324f',
+      },
+    })
+      .jpeg()
+      .toBuffer();
+    await writeFile(filePath, image);
+    const file = {
+      fieldname: 'files',
+      originalname: 'camera.jpg',
+      encoding: '7bit',
+      mimetype: 'image/jpeg',
+      size: image.length,
+      destination: uploadDir,
+      filename: 'incoming.jpg',
+      path: filePath,
+      buffer: image,
+      stream: null,
+    } as unknown as Express.Multer.File;
+
+    try {
+      const stored = await normalizeStoredUpload(file);
+      const metadata = await sharp(stored.path).metadata();
+
+      expect(metadata).toMatchObject({
+        format: 'webp',
+        width: 2560,
+        height: 1920,
+      });
+    } finally {
+      await rm(uploadDir, { recursive: true, force: true });
+    }
+  });
 });

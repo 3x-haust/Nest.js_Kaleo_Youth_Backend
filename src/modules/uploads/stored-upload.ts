@@ -8,10 +8,11 @@ import { stripImageMetadata } from '../../common/utils/image-metadata.util';
 const WEBP_OPTIONS = {
   quality: 82,
   alphaQuality: 90,
-  effort: 4,
+  effort: 0,
   smartSubsample: true,
 } as const;
 
+const MAX_IMAGE_EDGE = 2560;
 const MAX_PARALLEL_ENCODINGS = 1;
 let activeEncodings = 0;
 const encodingWaiters: Array<() => void> = [];
@@ -73,6 +74,12 @@ export async function encodeImageAsWebp(
         await imagePipeline(inputPath, mimeType)
       )
         .rotate()
+        .resize({
+          width: MAX_IMAGE_EDGE,
+          height: MAX_IMAGE_EDGE,
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
         .webp(WEBP_OPTIONS)
         .toFile(temporaryPath);
       await rename(temporaryPath, outputPath);
