@@ -8,7 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, IsNull, Repository } from 'typeorm';
 import type { Request } from 'express';
-import { join } from 'node:path';
+import { resolve } from 'node:path';
 import { Attachment, AttachmentOwnerType, AuditAction } from '../../entities';
 import { sanitizePlainText } from '../../common/utils/sanitize.util';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
@@ -244,7 +244,7 @@ export class UploadsService {
       return locked;
     });
     await Promise.all(rows.map((row) => this.deletePhysicalFile(row.fileUrl)));
-    const uploadDir = join(
+    const uploadDir = resolve(
       process.cwd(),
       this.configService.get<string>('upload.dir') ?? './uploads',
     );
@@ -271,6 +271,6 @@ export class UploadsService {
     if (!filename || filename.includes('..') || filename.includes('/')) return;
     const uploadDir =
       this.configService.get<string>('upload.dir') ?? './uploads';
-    await deleteIncomingFile(join(process.cwd(), uploadDir, filename));
+    await deleteIncomingFile(resolve(process.cwd(), uploadDir, filename));
   }
 }

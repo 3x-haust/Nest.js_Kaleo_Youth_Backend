@@ -2,7 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/multer-options.interface';
 import { diskStorage } from 'multer';
 import { randomUUID } from 'node:crypto';
-import { extname, join } from 'node:path';
+import { extname, resolve } from 'node:path';
 import { mkdirSync } from 'node:fs';
 
 /**
@@ -21,8 +21,12 @@ const ALLOWED: Record<string, string[]> = {
 
 export const ALLOWED_EXTENSIONS = Object.keys(ALLOWED);
 
+export function resolveUploadDir(uploadDir: string): string {
+  return resolve(process.cwd(), uploadDir);
+}
+
 export function buildMulterOptions(uploadDir: string): MulterOptions {
-  const absoluteDir = join(process.cwd(), uploadDir);
+  const absoluteDir = resolveUploadDir(uploadDir);
   mkdirSync(absoluteDir, { recursive: true });
 
   return {

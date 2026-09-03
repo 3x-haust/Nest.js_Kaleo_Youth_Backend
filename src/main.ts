@@ -5,7 +5,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import type { Response } from 'express';
-import { join } from 'node:path';
+import { resolve } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { AppModule } from './app.module';
 import { API_PREFIX } from './common/constants';
@@ -54,7 +54,7 @@ async function bootstrap() {
   );
   app.useGlobalFilters(new AllExceptionsFilter());
 
-  const absoluteUploadDir = join(process.cwd(), uploadDir);
+  const absoluteUploadDir = resolve(process.cwd(), uploadDir);
   mkdirSync(absoluteUploadDir, { recursive: true });
   app.useStaticAssets(absoluteUploadDir, {
     prefix: '/uploads/',
