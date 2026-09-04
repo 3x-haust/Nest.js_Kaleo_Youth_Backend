@@ -160,8 +160,8 @@ describe('normalizeStoredUpload', () => {
 
       expect(metadata).toMatchObject({
         format: 'webp',
-        width: 1024,
-        height: 768,
+        width: 1920,
+        height: 1440,
       });
       expect(converterArgs.slice(0, -2)).toEqual([
         '--quiet',
