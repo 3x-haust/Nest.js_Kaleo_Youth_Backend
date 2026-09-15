@@ -12,12 +12,28 @@ import {
 } from '../youtube/youtube.service';
 import {
   FIXED_PLAYLIST_ID,
+  FIXED_PLAYLIST_IDS,
   FixedPlaylistSyncService,
+  type FixedPlaylistSingleResult,
 } from './fixed-playlist-sync.service';
 
 jest.mock('../../common/utils/sanitize.util', () => ({
   sanitizePlainText: (value: string) => value,
 }));
+
+const SECONDARY_PLAYLIST_ID = FIXED_PLAYLIST_IDS[1];
+
+function singleResult(
+  result: FixedPlaylistSingleResult,
+): FixedPlaylistSingleResult[] {
+  return [result, result];
+}
+
+function completed(
+  ...results: FixedPlaylistSingleResult[]
+): { status: 'completed'; results: FixedPlaylistSingleResult[] } {
+  return { status: 'completed', results };
+}
 
 function importedSong(
   youtubeVideoId: string,
@@ -34,9 +50,12 @@ function importedSong(
   };
 }
 
-function importResult(videoIds: readonly string[]): PlaylistImportResult {
+function importResult(
+  videoIds: readonly string[],
+  playlistId: string = FIXED_PLAYLIST_ID,
+): PlaylistImportResult {
   return {
-    playlistId: FIXED_PLAYLIST_ID,
+    playlistId,
     playlistTitle: 'Fixed Playlist',
     songs: videoIds.map(importedSong),
     unavailableCount: 0,
@@ -116,7 +135,13 @@ function createHarness(latest: Setlist | null, result = importResult(['a'])) {
   };
   const youtube = {
     isEnabled: jest.fn().mockReturnValue(true),
-    importPlaylist: jest.fn().mockResolvedValue(result),
+    importPlaylist: jest.fn((playlistId: string) =>
+      Promise.resolve(
+        playlistId === FIXED_PLAYLIST_ID
+          ? result
+          : importResult(result.songs.map((song) => song.youtubeVideoId ?? 'x'), playlistId),
+      ),
+    ),
   };
   const service = new FixedPlaylistSyncService(
     dataSource as unknown as DataSource,
@@ -140,10 +165,7 @@ describe('FixedPlaylistSyncService', () => {
 
     const result = await harness.service.syncFixedPlaylist();
 
-    expect(result).toEqual({
-      status: 'skipped',
-      reason: 'youtube_disabled',
-    });
+    expect(result).toEqual({ status: 'skipped', reason: 'youtube_disabled' });
     expect(harness.youtube.importPlaylist).not.toHaveBeenCalled();
     expect(harness.dataSource.transaction).not.toHaveBeenCalled();
   });
@@ -160,14 +182,29 @@ describe('FixedPlaylistSyncService', () => {
       new Date('2026-08-23T03:00:00+09:00'),
     );
 
-    expect(result).toEqual({
-      status: 'created',
-      setlistId: 'created-id',
-      serviceDate: '2026-08-30',
-      songCount: 2,
-    });
-    expect(harness.youtube.importPlaylist).toHaveBeenCalledWith(
+    expect(result).toEqual(
+      completed(
+        {
+          status: 'created',
+          setlistId: 'created-id',
+          serviceDate: '2026-08-30',
+          songCount: 2,
+        },
+        {
+          status: 'created',
+          setlistId: 'created-id',
+          serviceDate: '2026-08-30',
+          songCount: 2,
+        },
+      ),
+    );
+    expect(harness.youtube.importPlaylist).toHaveBeenNthCalledWith(
+      1,
       FIXED_PLAYLIST_ID,
+    );
+    expect(harness.youtube.importPlaylist).toHaveBeenNthCalledWith(
+      2,
+      SECONDARY_PLAYLIST_ID,
     );
     expect(harness.setlistRepository.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -175,6 +212,11 @@ describe('FixedPlaylistSyncService', () => {
         serviceDate: '2026-08-30',
         title: '주일 예배 콘티',
         youtubePlaylistId: FIXED_PLAYLIST_ID,
+      }),
+    );
+    expect(harness.setlistRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        youtubePlaylistId: SECONDARY_PLAYLIST_ID,
       }),
     );
   });
@@ -186,12 +228,22 @@ describe('FixedPlaylistSyncService', () => {
       new Date('2026-08-23T03:00:00+09:00'),
     );
 
-    expect(result).toEqual({
-      status: 'created',
-      setlistId: 'created-id',
-      serviceDate: '2026-08-30',
-      songCount: 1,
-    });
+    expect(result).toEqual(
+      completed(
+        {
+          status: 'created',
+          setlistId: 'created-id',
+          serviceDate: '2026-08-30',
+          songCount: 1,
+        },
+        {
+          status: 'created',
+          setlistId: 'created-id',
+          serviceDate: '2026-08-30',
+          songCount: 1,
+        },
+      ),
+    );
     expect(harness.setlistRepository.create).toHaveBeenCalledWith(
       expect.objectContaining({
         teamId: 'team-id',
@@ -210,7 +262,12 @@ describe('FixedPlaylistSyncService', () => {
       new Date('2026-08-23T03:00:00+09:00'),
     );
 
-    expect(result).toEqual({ status: 'skipped', reason: 'no_team' });
+    expect(result).toEqual(
+      completed(
+        { status: 'skipped', reason: 'no_team' },
+        { status: 'skipped', reason: 'no_team' },
+      ),
+    );
     expect(harness.setlistRepository.save).not.toHaveBeenCalled();
   });
 
@@ -231,21 +288,33 @@ describe('FixedPlaylistSyncService', () => {
       new Date('2026-08-23T03:00:00+09:00'),
     );
 
-    expect(result).toEqual({
-      status: 'unchanged',
-      setlistId: 'baseline-id',
-    });
+    expect(result).toEqual(
+      completed(
+        { status: 'unchanged', setlistId: 'baseline-id' },
+        { status: 'unchanged', setlistId: 'baseline-id' },
+      ),
+    );
     expect(harness.setlistRepository.save).not.toHaveBeenCalled();
   });
 
   it('refreshes enriched metadata on the baseline without creating next week', async () => {
-    const latest = baseline(['same-video']);
-    latest.youtubePlaylistTitle = 'Old English Playlist';
-    latest.songs[0].songTitle = 'Old English Song';
-    latest.songs[0].youtubeVideoTitle = 'Old English Video';
-    latest.songs[0].thumbnailUrl = 'https://img.example/low.jpg';
-    latest.songs[0].isUnavailable = true;
-    latest.songs[0].artist = 'Preserved artist';
+    const primary = baseline(['same-video']);
+    primary.youtubePlaylistTitle = 'Old English Playlist';
+    primary.songs[0].songTitle = 'Old English Song';
+    primary.songs[0].youtubeVideoTitle = 'Old English Video';
+    primary.songs[0].thumbnailUrl = 'https://img.example/low.jpg';
+    primary.songs[0].isUnavailable = true;
+    primary.songs[0].artist = 'Preserved artist';
+    const latest = primary;
+    const secondary = baseline(['secondary-video']);
+    secondary.id = 'secondary-id';
+    secondary.youtubePlaylistId = SECONDARY_PLAYLIST_ID;
+    secondary.youtubePlaylistTitle = 'Fixed Playlist';
+    secondary.songs.forEach((song) => {
+      song.setlistId = 'secondary-id';
+      song.songTitle = 'Song 0';
+      song.artist = 'Preserved artist';
+    });
     const enriched = importResult(['same-video']);
     enriched.playlistTitle = '현지화된 플레이리스트';
     enriched.songs[0] = {
@@ -256,7 +325,37 @@ describe('FixedPlaylistSyncService', () => {
       thumbnailUrl: 'https://img.example/high.jpg',
       isUnavailable: false,
     };
-    const harness = createHarness(latest, enriched);
+    const harness = createHarness(primary, enriched);
+    harness.youtube.importPlaylist.mockImplementation(
+      (playlistId: string) =>
+        Promise.resolve(
+          playlistId === FIXED_PLAYLIST_ID
+            ? enriched
+            : importResult(['secondary-video'], playlistId),
+        ),
+    );
+    const byPlaylist = new Map<string, Setlist>([
+      [FIXED_PLAYLIST_ID, primary],
+      [SECONDARY_PLAYLIST_ID, secondary],
+    ]);
+    harness.setlistRepository.find.mockImplementation(
+      (options: {
+        where: { youtubePlaylistId: string };
+      }): Promise<Setlist[]> =>
+        Promise.resolve(
+          options.where.youtubePlaylistId === FIXED_PLAYLIST_ID
+            ? [primary]
+            : [],
+        ),
+    );
+    harness.setlistRepository.findOne.mockImplementation(
+      (options: {
+        where: { youtubePlaylistId?: string };
+      }): Promise<Setlist | null> =>
+        Promise.resolve(
+          byPlaylist.get(options.where.youtubePlaylistId ?? '') ?? null,
+        ),
+    );
     harness.songRepository.save.mockImplementation((songs) => {
       latest.songs = songs;
       return Promise.resolve(songs);
@@ -264,12 +363,20 @@ describe('FixedPlaylistSyncService', () => {
 
     await expect(
       harness.service.syncFixedPlaylist(new Date('2026-08-23T03:00:00+09:00')),
-    ).resolves.toEqual({
-      status: 'updated',
-      setlistId: 'baseline-id',
-      serviceDate: '2026-08-23',
-      songCount: 1,
-    });
+    ).resolves.toEqual(
+      completed(
+        {
+          status: 'updated',
+          setlistId: 'baseline-id',
+          serviceDate: '2026-08-23',
+          songCount: 1,
+        },
+        {
+          status: 'unchanged',
+          setlistId: 'secondary-id',
+        },
+      ),
+    );
     expect(harness.setlistRepository.create).not.toHaveBeenCalled();
     expect(harness.setlistRepository.save).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -296,29 +403,38 @@ describe('FixedPlaylistSyncService', () => {
 
     await expect(
       harness.service.syncFixedPlaylist(new Date('2026-08-24T03:00:00+09:00')),
-    ).resolves.toEqual({
-      status: 'unchanged',
-      setlistId: 'baseline-id',
-    });
+    ).resolves.toEqual(
+      completed(
+        { status: 'unchanged', setlistId: 'baseline-id' },
+        {
+          status: 'unchanged',
+          setlistId: 'secondary-id',
+        },
+      ),
+    );
     expect(harness.setlistRepository.create).not.toHaveBeenCalled();
-    expect(harness.setlistRepository.save).toHaveBeenCalledTimes(1);
+    expect(harness.songRepository.save).toHaveBeenCalledTimes(1);
   });
 
-  it('targets the next Seoul Sunday from now despite a legacy Thursday baseline', async () => {
-    const legacyBaseline = baseline(['a']);
-    legacyBaseline.serviceDate = '2026-08-20';
-    const snapshots = [legacyBaseline];
+  it('creates a separate setlist for each fixed playlist and keeps it on the primary baseline', async () => {
+    const primaryBaseline = baseline(['a']);
+    primaryBaseline.serviceDate = '2026-08-20';
+    const snapshots: Setlist[] = [primaryBaseline];
     let nextId = 1;
-    let remote = importResult(['a', 'b']);
+    const remote = importResult(['a', 'b']);
     const setlistRepository = {
       findOne: jest.fn(
         (options: {
-          where: { serviceDate?: string | { _value: string } };
+          where: {
+            youtubePlaylistId?: string;
+            serviceDate?: string | { _value: string };
+          };
         }): Promise<Setlist | null> => {
           const condition = options.where.serviceDate;
           const matching = snapshots
             .filter(
-              (snapshot) => snapshot.youtubePlaylistId === FIXED_PLAYLIST_ID,
+              (snapshot) =>
+                snapshot.youtubePlaylistId === options.where.youtubePlaylistId,
             )
             .filter((snapshot) => {
               if (typeof condition === 'string') {
@@ -334,7 +450,18 @@ describe('FixedPlaylistSyncService', () => {
           return Promise.resolve(matching[0] ?? null);
         },
       ),
-      find: jest.fn().mockResolvedValue([]),
+      find: jest
+        .fn()
+        .mockImplementation(
+          (options: {
+            where: { youtubePlaylistId: string };
+          }): Promise<Setlist[]> =>
+            Promise.resolve(
+              options.where.youtubePlaylistId === FIXED_PLAYLIST_ID
+                ? snapshots
+                : [],
+            ),
+        ),
       create: jest.fn((value: Partial<Setlist>) => ({
         ...value,
         id: `created-${nextId++}`,
@@ -364,10 +491,18 @@ describe('FixedPlaylistSyncService', () => {
         return Promise.resolve(songs);
       }),
     };
+    const teamRepository = {
+      find: jest.fn().mockResolvedValue([{ id: 'team-id' }]),
+    };
     const manager = {
       query: jest.fn().mockResolvedValue(undefined),
-      getRepository: jest.fn((entity: typeof Setlist | typeof SetlistSong) =>
-        entity === Setlist ? setlistRepository : songRepository,
+      getRepository: jest.fn(
+        (entity: typeof Setlist | typeof SetlistSong | typeof WorshipTeam) =>
+          entity === Setlist
+            ? setlistRepository
+            : entity === SetlistSong
+              ? songRepository
+              : teamRepository,
       ),
     };
     const dataSource = {
@@ -378,53 +513,55 @@ describe('FixedPlaylistSyncService', () => {
     };
     const youtube = {
       isEnabled: jest.fn().mockReturnValue(true),
-      importPlaylist: jest.fn(() => Promise.resolve(remote)),
+      importPlaylist: jest.fn((playlistId: string) =>
+        Promise.resolve(
+          playlistId === FIXED_PLAYLIST_ID
+            ? remote
+            : importResult(['secondary'], playlistId),
+        ),
+      ),
     };
     const service = new FixedPlaylistSyncService(
       dataSource as unknown as DataSource,
       youtube as unknown as YoutubeService,
     );
-    const syncAt = (timestamp: string) =>
-      service.syncFixedPlaylist(new Date(timestamp));
+    const completedResults = async (timestamp: string) => {
+      const result = await service.syncFixedPlaylist(new Date(timestamp));
+      if (result.status !== 'completed') {
+        throw new Error(`expected completed, received ${result.status}`);
+      }
+      return result.results;
+    };
+    const primaryAt = async (timestamp: string) =>
+      (await completedResults(timestamp))[0];
+    const secondaryAt = async (timestamp: string) =>
+      (await completedResults(timestamp))[1];
 
-    await expect(syncAt('2026-08-23T00:00:00+09:00')).resolves.toEqual(
+    await expect(primaryAt('2026-08-23T00:00:00+09:00')).resolves.toEqual(
       expect.objectContaining({
         status: 'created',
         setlistId: 'created-1',
         serviceDate: '2026-08-30',
       }),
     );
+    expect(primaryBaseline.title).toBe('주일 예배 콘티');
 
-    remote = importResult(['a', 'c']);
-    await expect(syncAt('2026-08-27T03:00:00+09:00')).resolves.toEqual(
-      expect.objectContaining({
-        status: 'updated',
-        setlistId: 'created-1',
-        serviceDate: '2026-08-30',
-      }),
-    );
-    expect(snapshots.map((snapshot) => snapshot.serviceDate)).toEqual([
-      '2026-08-20',
-      '2026-08-30',
-    ]);
-
-    await expect(syncAt('2026-08-28T03:00:00+09:00')).resolves.toEqual({
+    await expect(secondaryAt('2026-08-23T00:00:00+09:00')).resolves.toEqual({
       status: 'unchanged',
-      setlistId: 'created-1',
+      setlistId: 'created-2',
     });
-
-    remote = importResult(['a', 'd']);
-    await expect(syncAt('2026-08-30T00:00:00+09:00')).resolves.toEqual(
-      expect.objectContaining({
-        status: 'created',
-        setlistId: 'created-2',
-        serviceDate: '2026-09-06',
-      }),
-    );
-    expect(snapshots.map((snapshot) => snapshot.serviceDate)).toEqual([
-      '2026-08-20',
-      '2026-08-30',
-      '2026-09-06',
+    expect(
+      snapshots.map((snapshot) =>
+        [
+          snapshot.serviceDate,
+          snapshot.youtubePlaylistId,
+          snapshot.title,
+        ].join(' '),
+      ),
+    ).toEqual([
+      '2026-08-20 PLiH1f3x84aAhtvZKpSXuxeFP8DdZZakOY 주일 예배 콘티',
+      '2026-08-30 PLiH1f3x84aAhtvZKpSXuxeFP8DdZZakOY 주일 예배 콘티',
+      '2026-08-30 PL3XAVRJqjRbZNRw7d-b49stFYz8BXrxW3 주일예배 찬양 콘티',
     ]);
   });
 
@@ -451,16 +588,30 @@ describe('FixedPlaylistSyncService', () => {
       new Date('2026-08-23T03:00:00+09:00'),
     );
 
-    expect(result).toEqual({
-      status: 'created',
-      setlistId: 'created-id',
-      serviceDate: '2026-08-30',
-      songCount: 3,
-    });
-    expect(events).toEqual(['prefetch', 'transaction']);
+    expect(result).toEqual(
+      completed(
+        {
+          status: 'created',
+          setlistId: 'created-id',
+          serviceDate: '2026-08-30',
+          songCount: 3,
+        },
+        {
+          status: 'created',
+          setlistId: 'created-id',
+          serviceDate: '2026-08-30',
+          songCount: 3,
+        },
+      ),
+    );
+    expect(events).toEqual(['prefetch', 'transaction', 'prefetch', 'transaction']);
     expect(harness.manager.query).toHaveBeenCalledWith(
       'SELECT pg_advisory_xact_lock(hashtext($1))',
       [FIXED_PLAYLIST_ID],
+    );
+    expect(harness.manager.query).toHaveBeenCalledWith(
+      'SELECT pg_advisory_xact_lock(hashtext($1))',
+      [SECONDARY_PLAYLIST_ID],
     );
     expect(harness.setlistRepository.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -471,6 +622,16 @@ describe('FixedPlaylistSyncService', () => {
         createdByAdminId: null,
       }),
     );
+    expect(harness.setlistRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        serviceDate: '2026-08-30',
+        fileUrl: null,
+        youtubePlaylistId: SECONDARY_PLAYLIST_ID,
+        syncStatus: SetlistSyncStatus.IMPORTED,
+        createdByAdminId: null,
+      }),
+    );
+    expect(harness.setlistRepository.create).toHaveBeenCalledTimes(2);
     expect(harness.songRepository.save).toHaveBeenCalledWith([
       expect.objectContaining({
         displayOrder: 0,

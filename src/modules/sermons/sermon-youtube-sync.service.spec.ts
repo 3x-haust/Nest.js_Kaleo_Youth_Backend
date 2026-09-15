@@ -55,7 +55,7 @@ function createHarness(remoteUploads: YoutubeChannelUpload[] = []) {
     getLatestChannelUploads: jest.fn().mockResolvedValue(remoteUploads),
   };
   const config = {
-    get: jest.fn((key: string) => {
+    get: jest.fn((key: string): string | undefined => {
       if (key === 'youtube.sermonChannel') return CHANNEL;
       if (key === 'youtube.sermonPreacherName') return '박정인 목사';
       return undefined;

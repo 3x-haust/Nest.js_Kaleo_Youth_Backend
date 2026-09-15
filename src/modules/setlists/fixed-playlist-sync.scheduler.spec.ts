@@ -6,12 +6,15 @@ import {
 } from '../youtube/youtube.service';
 import {
   FIXED_PLAYLIST_ID,
+  FIXED_PLAYLIST_IDS,
   FixedPlaylistSyncService,
 } from './fixed-playlist-sync.service';
 
 jest.mock('../../common/utils/sanitize.util', () => ({
   sanitizePlainText: (value: string) => value,
 }));
+
+const SECONDARY_PLAYLIST_ID = FIXED_PLAYLIST_IDS[1];
 
 const imported: PlaylistImportResult = {
   playlistId: FIXED_PLAYLIST_ID,
@@ -68,38 +71,40 @@ function baseline(): Setlist {
 }
 
 describe('FixedPlaylistSyncService scheduling and concurrency', () => {
-  it('serializes concurrent runs and creates only one next snapshot', async () => {
-    let latest = baseline();
-    let importsStarted = 0;
-    let releaseImports: () => void = () => undefined;
-    const bothImportsStarted = new Promise<void>((resolve) => {
-      releaseImports = resolve;
-    });
+  it('serializes concurrent runs and creates one next snapshot per playlist', async () => {
+    const latestByPlaylist = new Map<string, Setlist>([
+      [FIXED_PLAYLIST_ID, baseline()],
+      [SECONDARY_PLAYLIST_ID, { ...baseline(), id: 'baseline-id-2' }],
+    ]);
+    const startedIds: string[] = [];
     const youtube = {
       isEnabled: jest.fn().mockReturnValue(true),
-      importPlaylist: jest.fn(async () => {
-        importsStarted += 1;
-        if (importsStarted === 2) releaseImports();
-        await bothImportsStarted;
-        return imported;
+      importPlaylist: jest.fn((playlistId: string) => {
+        startedIds.push(playlistId);
+        return Promise.resolve({ ...imported, playlistId });
       }),
     };
     const setlistRepository = {
-      findOne: jest.fn(() => Promise.resolve(latest)),
+      findOne: jest.fn((options: { where: { youtubePlaylistId: string } }) =>
+        Promise.resolve(latestByPlaylist.get(options.where.youtubePlaylistId) ?? null),
+      ),
       create: jest.fn((value: Partial<Setlist>) => ({
         ...value,
-        id: 'created-id',
+        id: `created-${value.youtubePlaylistId === FIXED_PLAYLIST_ID ? 'a' : 'b'}`,
         songs: [],
       })),
       save: jest.fn((value: Setlist) => {
-        latest = value;
+        latestByPlaylist.set(value.youtubePlaylistId ?? '', value);
         return Promise.resolve(value);
       }),
     };
     const songRepository = {
       create: jest.fn((value: Partial<SetlistSong>) => value),
       save: jest.fn((songs: SetlistSong[]) => {
-        latest.songs = songs;
+        const target = songs[0]?.setlistId;
+        for (const snapshot of latestByPlaylist.values()) {
+          if (snapshot.id === target) snapshot.songs = songs;
+        }
         return Promise.resolve(songs);
       }),
     };
@@ -137,11 +142,38 @@ describe('FixedPlaylistSyncService scheduling and concurrency', () => {
       service.syncFixedPlaylist(),
     ]);
 
-    expect(results.map((result) => result.status).sort()).toEqual([
-      'created',
-      'unchanged',
+    expect(startedIds).toEqual([
+      FIXED_PLAYLIST_ID,
+      FIXED_PLAYLIST_ID,
+      SECONDARY_PLAYLIST_ID,
+      SECONDARY_PLAYLIST_ID,
     ]);
-    expect(setlistRepository.save).toHaveBeenCalledTimes(1);
+    expect(
+      results.flatMap((result) =>
+        'results' in result
+          ? result.results.map((item) => item.status)
+          : [result.status],
+      ),
+    ).toEqual(['created', 'created', 'unchanged', 'unchanged']);
+    expect(setlistRepository.save).toHaveBeenCalledTimes(2);
+    expect(
+      setlistRepository.create.mock.calls.map(([value]) => ({
+        playlistId: value.youtubePlaylistId,
+        serviceDate: value.serviceDate,
+        title: value.title,
+      })),
+    ).toEqual([
+      {
+        playlistId: FIXED_PLAYLIST_ID,
+        serviceDate: '2026-09-20',
+        title: '주일 예배 콘티',
+      },
+      {
+        playlistId: SECONDARY_PLAYLIST_ID,
+        serviceDate: '2026-09-20',
+        title: '주일 예배 콘티',
+      },
+    ]);
   });
 
   it('does not enter a transaction when playlist prefetch fails', async () => {

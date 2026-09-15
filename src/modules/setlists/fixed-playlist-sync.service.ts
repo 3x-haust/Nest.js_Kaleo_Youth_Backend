@@ -13,9 +13,22 @@ import {
 } from '../../entities';
 import { YoutubeService, type ImportedSong } from '../youtube/youtube.service';
 
-export const FIXED_PLAYLIST_ID = 'PLiH1f3x84aAhtvZKpSXuxeFP8DdZZakOY' as const;
+export const FIXED_PLAYLIST_IDS = [
+  'PLiH1f3x84aAhtvZKpSXuxeFP8DdZZakOY',
+  'PL3XAVRJqjRbZNRw7d-b49stFYz8BXrxW3',
+] as const;
+
+export const FIXED_PLAYLIST_ID = FIXED_PLAYLIST_IDS[0];
 
 export type FixedPlaylistSyncResult =
+  | FixedPlaylistSkippedResult
+  | FixedPlaylistSingleResult
+  | {
+      readonly status: 'completed';
+      readonly results: readonly FixedPlaylistSingleResult[];
+    };
+
+export type FixedPlaylistSingleResult =
   | {
       readonly status: 'skipped';
       readonly reason: 'youtube_disabled' | 'no_team';
@@ -30,6 +43,11 @@ export type FixedPlaylistSyncResult =
       readonly serviceDate: string;
       readonly songCount: number;
     };
+
+export type FixedPlaylistSkippedResult = {
+  readonly status: 'skipped';
+  readonly reason: 'youtube_disabled' | 'no_team';
+};
 
 type PreservedSongMetadata = {
   readonly artist: string | null;
@@ -67,18 +85,32 @@ export class FixedPlaylistSyncService implements OnApplicationBootstrap {
       return { status: 'skipped', reason: 'youtube_disabled' };
     }
 
-    const imported = await this.youtube.importPlaylist(FIXED_PLAYLIST_ID);
+    const results: FixedPlaylistSingleResult[] = [];
+    for (const playlistId of FIXED_PLAYLIST_IDS) {
+      results.push(await this.syncOnePlaylist(playlistId, now));
+    }
+
+    return results.length === 1
+      ? results[0]
+      : { status: 'completed', results };
+  }
+
+  private async syncOnePlaylist(
+    playlistId: string,
+    now: Date,
+  ): Promise<FixedPlaylistSingleResult> {
+    const imported = await this.youtube.importPlaylist(playlistId);
     const currentDate = this.toSeoulCalendarDate(now);
 
     return this.dataSource.transaction(async (manager) => {
       await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-        FIXED_PLAYLIST_ID,
+        playlistId,
       ]);
 
       const setlistRepository = manager.getRepository(Setlist);
       let baseline = await setlistRepository.findOne({
         where: {
-          youtubePlaylistId: FIXED_PLAYLIST_ID,
+          youtubePlaylistId: playlistId,
           serviceDate: LessThanOrEqual(currentDate),
         },
         relations: { songs: true },
@@ -86,7 +118,10 @@ export class FixedPlaylistSyncService implements OnApplicationBootstrap {
       });
       if (!baseline) {
         const fallback = await setlistRepository.find({
-          where: { serviceDate: LessThanOrEqual(currentDate) },
+          where: {
+            youtubePlaylistId: playlistId,
+            serviceDate: LessThanOrEqual(currentDate),
+          },
           relations: { songs: true },
           order: { serviceDate: 'DESC', id: 'ASC' },
           take: 1,
@@ -108,7 +143,7 @@ export class FixedPlaylistSyncService implements OnApplicationBootstrap {
       const serviceDate = this.nextSunday(currentDate);
       const pendingCandidate = await setlistRepository.findOne({
         where: {
-          youtubePlaylistId: FIXED_PLAYLIST_ID,
+          youtubePlaylistId: playlistId,
           serviceDate,
         },
         relations: { songs: true },
@@ -120,6 +155,25 @@ export class FixedPlaylistSyncService implements OnApplicationBootstrap {
       const importedSongs = [...imported.songs].sort(
         (left, right) => left.displayOrder - right.displayOrder,
       );
+      const isSeasonalTitleUpdate =
+        !pending &&
+        importedSongs.length > 0 &&
+        baseline !== null &&
+        this.isSameSongOrder(
+          baseline.songs,
+          importedSongs,
+          baseline.title,
+          imported.playlistTitle,
+        ) &&
+        this.deriveTitle(baseline, imported.playlistTitle) !== baseline.title;
+      if (isSeasonalTitleUpdate) {
+        const renamed = await setlistRepository.save(
+          Object.assign(baseline as Setlist, {
+            title: this.deriveTitle(baseline, imported.playlistTitle),
+          }),
+        );
+        return { status: 'unchanged', setlistId: renamed.id };
+      }
       const currentSongs = [...(current?.songs ?? [])].sort(
         (left, right) => left.displayOrder - right.displayOrder,
       );
@@ -155,9 +209,9 @@ export class FixedPlaylistSyncService implements OnApplicationBootstrap {
             setlistRepository.create({
               teamId: baseline?.teamId ?? bootstrapTeamId,
               serviceDate,
-              title: baseline?.title ?? '주일예배 찬양 콘티',
+              title: this.deriveTitle(current, playlistTitle),
               fileUrl: null,
-              youtubePlaylistId: FIXED_PLAYLIST_ID,
+              youtubePlaylistId: playlistId,
               youtubePlaylistTitle: playlistTitle,
               lastSyncedAt: now,
               syncStatus: SetlistSyncStatus.IMPORTED,
@@ -210,6 +264,26 @@ export class FixedPlaylistSyncService implements OnApplicationBootstrap {
     );
   }
 
+  private isSameSongOrder(
+    current: readonly SetlistSong[],
+    imported: readonly ImportedSong[],
+    currentTitle: string,
+    importedTitle: string | null,
+  ): boolean {
+    if (current.length !== imported.length) return false;
+    if (currentTitle !== this.deriveTitle(null, importedTitle)) return false;
+    return current.every((song, index) => {
+      const candidate = imported[index];
+      return (
+        this.canonicalSong(song) === this.canonicalSong(candidate) &&
+        song.songTitle === candidate.songTitle &&
+        song.youtubeVideoTitle === candidate.youtubeVideoTitle &&
+        song.thumbnailUrl === candidate.thumbnailUrl &&
+        song.isUnavailable === candidate.isUnavailable
+      );
+    });
+  }
+
   private canonicalSong(song: {
     readonly youtubeVideoId: string | null;
     readonly youtubeVideoTitle: string | null;
@@ -250,6 +324,16 @@ export class FixedPlaylistSyncService implements OnApplicationBootstrap {
       queues.set(song.youtubeVideoId, queue);
     }
     return queues;
+  }
+
+  private deriveTitle(
+    current: Setlist | null,
+    playlistTitle: string | null,
+  ): string {
+    if (current) return current.title;
+    const playlistSeason = /(\d{4})\s*\uc2dc\uc98c/.exec(playlistTitle ?? '');
+    if (!playlistSeason) return '주일예배 찬양 콘티';
+    return `${playlistSeason[1]} 시즌 찬양 콘티`;
   }
 
   private toSeoulCalendarDate(value: Date): string {
