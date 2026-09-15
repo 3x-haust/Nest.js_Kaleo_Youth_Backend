@@ -4,7 +4,7 @@ import {
   type OnApplicationBootstrap,
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { DataSource, LessThanOrEqual } from 'typeorm';
+import { DataSource, LessThanOrEqual, type EntityManager } from 'typeorm';
 import {
   Setlist,
   SetlistSong,
@@ -85,19 +85,97 @@ export class FixedPlaylistSyncService implements OnApplicationBootstrap {
       return { status: 'skipped', reason: 'youtube_disabled' };
     }
 
+    const currentDate = this.toSeoulCalendarDate(now);
+    const serviceDate = this.nextSunday(currentDate);
     const results: FixedPlaylistSingleResult[] = [];
     for (const playlistId of FIXED_PLAYLIST_IDS) {
-      results.push(await this.syncOnePlaylist(playlistId, now));
+      results.push(await this.syncOnePlaylist(playlistId, now, serviceDate));
     }
 
-    return results.length === 1
-      ? results[0]
-      : { status: 'completed', results };
+    return { status: 'completed', results };
+  }
+
+  /**
+   * 인도자별 고정 플레이리스트는 같은 주일에 나란히 공개됩니다. 한 인도자가
+   * 다음 주일 콘티를 새로 만들면, 아직 같은 주일 콘티가 없는 나머지
+   * 플레이리스트도 현재 곡 목록으로 맞춰 두어 두 콘티가 어긋나지 않게 합니다.
+   * 이후 플레이리스트가 실제로 갱신되면 그때 곡이 교체됩니다.
+   */
+  private async advancePendingPlaylists(
+    now: Date,
+    serviceDate: string,
+  ): Promise<FixedPlaylistSingleResult[]> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        `fixed:${serviceDate}`,
+      ]);
+
+      const setlistRepository = manager.getRepository(Setlist);
+      const pending = await setlistRepository.find({
+        where: { serviceDate },
+        relations: { songs: true },
+        order: { id: 'ASC' },
+      });
+      const covered = new Set(
+        pending
+          .map((setlist) => setlist.youtubePlaylistId)
+          .filter((playlistId): playlistId is string => playlistId !== null),
+      );
+      const missing = FIXED_PLAYLIST_IDS.filter(
+        (playlistId) => !covered.has(playlistId),
+      );
+      if (missing.length === 0) return [];
+
+      const results: FixedPlaylistSingleResult[] = [];
+      for (const playlistId of missing) {
+        const imported = await this.youtube.importPlaylist(playlistId);
+        const baseline = await setlistRepository.findOne({
+          where: {
+            youtubePlaylistId: playlistId,
+            serviceDate: LessThanOrEqual(serviceDate),
+          },
+          relations: { songs: true },
+          order: { serviceDate: 'DESC', id: 'ASC' },
+        });
+        const importedSongs = [...imported.songs].sort(
+          (left, right) => left.displayOrder - right.displayOrder,
+        );
+        const playlistTitle =
+          imported.playlistTitle ?? baseline?.youtubePlaylistTitle ?? null;
+        const snapshot = await setlistRepository.save(
+          setlistRepository.create({
+            teamId: baseline?.teamId ?? null,
+            serviceDate,
+            title: this.deriveTitle(baseline, playlistTitle),
+            fileUrl: null,
+            youtubePlaylistId: playlistId,
+            youtubePlaylistTitle: playlistTitle,
+            lastSyncedAt: now,
+            syncStatus: SetlistSyncStatus.IMPORTED,
+            createdByAdminId: null,
+          }),
+        );
+        await this.replaceSongs(
+          manager,
+          snapshot.id,
+          importedSongs,
+          baseline?.songs ?? [],
+        );
+        results.push({
+          status: 'created',
+          setlistId: snapshot.id,
+          serviceDate,
+          songCount: importedSongs.length,
+        });
+      }
+      return results;
+    });
   }
 
   private async syncOnePlaylist(
     playlistId: string,
     now: Date,
+    serviceDate: string,
   ): Promise<FixedPlaylistSingleResult> {
     const imported = await this.youtube.importPlaylist(playlistId);
     const currentDate = this.toSeoulCalendarDate(now);
@@ -140,7 +218,6 @@ export class FixedPlaylistSyncService implements OnApplicationBootstrap {
         }
       }
 
-      const serviceDate = this.nextSunday(currentDate);
       const pendingCandidate = await setlistRepository.findOne({
         where: {
           youtubePlaylistId: playlistId,
@@ -218,39 +295,50 @@ export class FixedPlaylistSyncService implements OnApplicationBootstrap {
               createdByAdminId: null,
             }),
           );
-
-      const metadataQueues = this.buildPreservedMetadataQueues(currentSongs);
-      const songRepository = manager.getRepository(SetlistSong);
-      if (existing) {
-        await songRepository.delete({ setlistId: snapshot.id });
-      }
-      const songs = importedSongs.map((song, displayOrder) => {
-        const queue = song.youtubeVideoId
-          ? metadataQueues.get(song.youtubeVideoId)
-          : undefined;
-        const preserved = queue?.shift();
-        return songRepository.create({
-          setlistId: snapshot.id,
-          displayOrder,
-          songTitle: song.songTitle,
-          artist: preserved ? preserved.artist : song.artist,
-          youtubeVideoId: song.youtubeVideoId,
-          youtubeVideoTitle: song.youtubeVideoTitle,
-          thumbnailUrl: song.thumbnailUrl,
-          note: preserved?.note ?? null,
-          sheetFileUrl: preserved?.sheetFileUrl ?? null,
-          isUnavailable: song.isUnavailable,
-        });
-      });
-      await songRepository.save(songs);
+      await this.replaceSongs(
+        manager,
+        snapshot.id,
+        importedSongs,
+        currentSongs,
+      );
 
       return {
         status: existing ? 'updated' : 'created',
         setlistId: snapshot.id,
         serviceDate: snapshot.serviceDate,
-        songCount: songs.length,
+        songCount: importedSongs.length,
       };
     });
+  }
+
+  private async replaceSongs(
+    manager: EntityManager,
+    setlistId: string,
+    importedSongs: readonly ImportedSong[],
+    preservedSource: readonly SetlistSong[],
+  ): Promise<void> {
+    const metadataQueues = this.buildPreservedMetadataQueues(preservedSource);
+    const songRepository = manager.getRepository(SetlistSong);
+    await songRepository.delete({ setlistId });
+    const songs = importedSongs.map((song, displayOrder) => {
+      const queue = song.youtubeVideoId
+        ? metadataQueues.get(song.youtubeVideoId)
+        : undefined;
+      const preserved = queue?.shift();
+      return songRepository.create({
+        setlistId,
+        displayOrder,
+        songTitle: song.songTitle,
+        artist: preserved ? preserved.artist : song.artist,
+        youtubeVideoId: song.youtubeVideoId,
+        youtubeVideoTitle: song.youtubeVideoTitle,
+        thumbnailUrl: song.thumbnailUrl,
+        note: preserved?.note ?? null,
+        sheetFileUrl: preserved?.sheetFileUrl ?? null,
+        isUnavailable: song.isUnavailable,
+      });
+    });
+    await songRepository.save(songs);
   }
 
   private hasSameCanonicalOrder(

@@ -35,6 +35,14 @@ function completed(
   return { status: 'completed', results };
 }
 
+function synced(
+  primary: FixedPlaylistSingleResult,
+  secondary: FixedPlaylistSingleResult,
+  advanced: FixedPlaylistSingleResult[] = [],
+): { status: 'completed'; results: FixedPlaylistSingleResult[] } {
+  return completed(primary, secondary, ...advanced);
+}
+
 function importedSong(
   youtubeVideoId: string,
   displayOrder: number,
@@ -98,14 +106,50 @@ function baseline(videoIds: readonly string[]): Setlist {
 }
 
 function createHarness(latest: Setlist | null, result = importResult(['a'])) {
+  const snapshots = latest ? [latest] : [];
+  let nextId = 1;
   const setlistRepository = {
-    findOne: jest.fn().mockResolvedValue(latest),
-    find: jest.fn().mockResolvedValue(latest ? [latest] : []),
+    findOne: jest.fn(
+      (options: {
+        where: { youtubePlaylistId?: string; serviceDate?: unknown };
+      }): Promise<Setlist | null> => {
+        const playlistId = options.where.youtubePlaylistId;
+        const matches = snapshots.filter((snapshot) =>
+          playlistId ? snapshot.youtubePlaylistId === playlistId : true,
+        );
+        return Promise.resolve(matches[matches.length - 1] ?? null);
+      },
+    ),
+    find: jest.fn(
+      (options: {
+        where?: { youtubePlaylistId?: string; serviceDate?: unknown };
+      }): Promise<Setlist[]> => {
+        const where = options?.where ?? {};
+        const playlistId = where.youtubePlaylistId;
+        const serviceDate = where.serviceDate;
+        const matches = snapshots.filter((snapshot) => {
+          if (playlistId && snapshot.youtubePlaylistId !== playlistId)
+            return false;
+          if (typeof serviceDate === 'string')
+            return snapshot.serviceDate === serviceDate;
+          if (serviceDate)
+            return snapshot.serviceDate <= (serviceDate as { _value: string })._value;
+          return true;
+        });
+        return Promise.resolve(matches);
+      },
+    ),
     create: jest.fn((value: Partial<Setlist>) => ({
       ...value,
-      id: 'created-id',
+      id: `created-${nextId++}`,
+      songs: [],
     })),
-    save: jest.fn((value: Setlist) => Promise.resolve(value)),
+    save: jest.fn((value: Setlist) => {
+      const index = snapshots.findIndex((snapshot) => snapshot.id === value.id);
+      if (index === -1) snapshots.push(value);
+      else snapshots[index] = value;
+      return Promise.resolve(value);
+    }),
   };
   const songRepository = {
     create: jest.fn((value: Partial<SetlistSong>) => value),
@@ -155,6 +199,7 @@ function createHarness(latest: Setlist | null, result = importResult(['a'])) {
     setlistRepository,
     songRepository,
     teamRepository,
+    snapshots,
   };
 }
 
@@ -183,16 +228,16 @@ describe('FixedPlaylistSyncService', () => {
     );
 
     expect(result).toEqual(
-      completed(
+      synced(
         {
           status: 'created',
-          setlistId: 'created-id',
+          setlistId: 'created-1',
           serviceDate: '2026-08-30',
           songCount: 2,
         },
         {
           status: 'created',
-          setlistId: 'created-id',
+          setlistId: 'created-2',
           serviceDate: '2026-08-30',
           songCount: 2,
         },
@@ -229,16 +274,16 @@ describe('FixedPlaylistSyncService', () => {
     );
 
     expect(result).toEqual(
-      completed(
+      synced(
         {
           status: 'created',
-          setlistId: 'created-id',
+          setlistId: 'created-1',
           serviceDate: '2026-08-30',
           songCount: 1,
         },
         {
           status: 'created',
-          setlistId: 'created-id',
+          setlistId: 'created-2',
           serviceDate: '2026-08-30',
           songCount: 1,
         },
@@ -263,7 +308,7 @@ describe('FixedPlaylistSyncService', () => {
     );
 
     expect(result).toEqual(
-      completed(
+      synced(
         { status: 'skipped', reason: 'no_team' },
         { status: 'skipped', reason: 'no_team' },
       ),
@@ -289,12 +334,17 @@ describe('FixedPlaylistSyncService', () => {
     );
 
     expect(result).toEqual(
-      completed(
+      synced(
         { status: 'unchanged', setlistId: 'baseline-id' },
-        { status: 'unchanged', setlistId: 'baseline-id' },
+        {
+          status: 'created',
+          setlistId: 'created-1',
+          serviceDate: '2026-08-30',
+          songCount: 3,
+        },
       ),
     );
-    expect(harness.setlistRepository.save).not.toHaveBeenCalled();
+    expect(harness.setlistRepository.save).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes enriched metadata on the baseline without creating next week', async () => {
@@ -571,14 +621,14 @@ describe('FixedPlaylistSyncService', () => {
     latest.songs[0].artist = 'Preserved artist 0';
     latest.songs[1].artist = 'Preserved artist 1';
     latest.songs[2].artist = 'Preserved artist 2';
-    const harness = createHarness(
-      latest,
-      importResult(['duplicate', 'new', 'duplicate']),
+    const remote = importResult(['duplicate', 'new', 'duplicate']);
+    const harness = createHarness(latest, remote);
+    harness.youtube.importPlaylist.mockImplementation(
+      (playlistId: string) => {
+        events.push('prefetch');
+        return Promise.resolve({ ...remote, playlistId });
+      },
     );
-    harness.youtube.importPlaylist.mockImplementation(() => {
-      events.push('prefetch');
-      return Promise.resolve(importResult(['duplicate', 'new', 'duplicate']));
-    });
     harness.dataSource.transaction.mockImplementation((callback) => {
       events.push('transaction');
       return callback(harness.manager as unknown as EntityManager);
@@ -592,13 +642,13 @@ describe('FixedPlaylistSyncService', () => {
       completed(
         {
           status: 'created',
-          setlistId: 'created-id',
+          setlistId: 'created-1',
           serviceDate: '2026-08-30',
           songCount: 3,
         },
         {
           status: 'created',
-          setlistId: 'created-id',
+          setlistId: 'created-2',
           serviceDate: '2026-08-30',
           songCount: 3,
         },
@@ -632,25 +682,38 @@ describe('FixedPlaylistSyncService', () => {
       }),
     );
     expect(harness.setlistRepository.create).toHaveBeenCalledTimes(2);
-    expect(harness.songRepository.save).toHaveBeenCalledWith([
-      expect.objectContaining({
+    const savedCalls = harness.songRepository.save.mock.calls as [
+      SetlistSong[],
+    ][];
+    const preservedSongs = (setlistId: string) =>
+      (savedCalls.find(([songs]) => songs[0]?.setlistId === setlistId)?.[0] ?? []).map(
+        (song: SetlistSong) => ({
+          displayOrder: song.displayOrder,
+          artist: song.artist,
+          note: song.note,
+          sheetFileUrl: song.sheetFileUrl,
+        }),
+      );
+    expect(preservedSongs('created-1')).toEqual([
+      {
         displayOrder: 0,
         artist: 'Preserved artist 0',
         note: 'note-0',
         sheetFileUrl: '/sheets/0.pdf',
-      }),
-      expect.objectContaining({
+      },
+      {
         displayOrder: 1,
         artist: 'Preserved artist 2',
         note: 'note-2',
         sheetFileUrl: '/sheets/2.pdf',
-      }),
-      expect.objectContaining({
+      },
+      {
         displayOrder: 2,
         artist: 'Preserved artist 1',
         note: 'note-1',
         sheetFileUrl: '/sheets/1.pdf',
-      }),
+      },
     ]);
+    expect(savedCalls).toHaveLength(2);
   });
 });

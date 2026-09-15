@@ -100,6 +100,12 @@ describe('FixedPlaylistSyncService scheduling and concurrency', () => {
     };
     const songRepository = {
       create: jest.fn((value: Partial<SetlistSong>) => value),
+      delete: jest.fn(({ setlistId }: { setlistId: string }) => {
+        for (const snapshot of latestByPlaylist.values()) {
+          if (snapshot.id === setlistId) snapshot.songs = [];
+        }
+        return Promise.resolve({ affected: 1, raw: [] });
+      }),
       save: jest.fn((songs: SetlistSong[]) => {
         const target = songs[0]?.setlistId;
         for (const snapshot of latestByPlaylist.values()) {
